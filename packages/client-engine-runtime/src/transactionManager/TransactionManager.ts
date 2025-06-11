@@ -36,7 +36,6 @@ type TransactionWrapper = {
   timeout: number
   startedAt: number
   transaction?: ErrorCapturingTransaction
-  label?: string
   parentId?: string
   children: string[]
 }
@@ -73,7 +72,6 @@ export class TransactionManager {
       timeout: validatedOptions.timeout,
       startedAt: Date.now(),
       transaction: undefined,
-      label: options.label,
       parentId: options.parentId,
       children: [],
     }
@@ -288,10 +286,6 @@ export class TransactionManager {
       options.isolationLevel !== IsolationLevel.Serializable
     )
       throw new InvalidTransactionIsolationLevelError(options.isolationLevel)
-
-    if (options.parentId && !options.label) {
-      throw new TransactionManagerError('label is required for nested transactions')
-    }
 
     return {
       ...options,

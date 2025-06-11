@@ -11,7 +11,6 @@ export type Options = {
   timeout?: number
   isolationLevel?: IsolationLevel
   newTxId?: string
-  label?: string
   parentId?: string
 }
 
