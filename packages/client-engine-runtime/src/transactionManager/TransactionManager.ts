@@ -7,6 +7,8 @@ import { assertNever } from '../utils'
 import { IsolationLevel, Options, TransactionInfo } from './Transaction'
 import {
   InvalidTransactionIsolationLevelError,
+  NestedTransactionActiveError,
+  NestedTransactionOrderError,
   TransactionClosedError,
   TransactionDriverAdapterError,
   TransactionExecutionTimeoutError,
@@ -34,6 +36,9 @@ type TransactionWrapper = {
   timeout: number
   startedAt: number
   transaction?: ErrorCapturingTransaction
+  label?: string
+  parentId?: string
+  children: string[]
 }
 
 const debug = Debug('prisma:client:transactionManager')
@@ -68,6 +73,13 @@ export class TransactionManager {
       timeout: validatedOptions.timeout,
       startedAt: Date.now(),
       transaction: undefined,
+      label: options.label,
+      parentId: options.parentId,
+      children: [],
+    }
+    if (transaction.parentId) {
+      const parent = this.getActiveTransaction(transaction.parentId, 'start')
+      parent.children.push(transaction.id)
     }
     this.transactions.set(transaction.id, transaction)
 
@@ -125,11 +137,31 @@ export class TransactionManager {
 
   async commitTransaction(transactionId: string): Promise<void> {
     const txw = this.getActiveTransaction(transactionId, 'commit')
+    if (txw.children.length > 0) {
+      throw new NestedTransactionActiveError()
+    }
+    if (txw.parentId) {
+      const parent = this.transactions.get(txw.parentId)
+      if (!parent || parent.children[parent.children.length - 1] !== txw.id) {
+        throw new NestedTransactionOrderError()
+      }
+      parent.children.pop()
+    }
     await this.closeTransaction(txw, 'committed')
   }
 
   async rollbackTransaction(transactionId: string): Promise<void> {
     const txw = this.getActiveTransaction(transactionId, 'rollback')
+    if (txw.children.length > 0) {
+      throw new NestedTransactionActiveError()
+    }
+    if (txw.parentId) {
+      const parent = this.transactions.get(txw.parentId)
+      if (!parent || parent.children[parent.children.length - 1] !== txw.id) {
+        throw new NestedTransactionOrderError()
+      }
+      parent.children.pop()
+    }
     await this.closeTransaction(txw, 'rolled_back')
   }
 
@@ -224,6 +256,14 @@ export class TransactionManager {
     clearTimeout(tx.timer)
     tx.timer = undefined
 
+    if (tx.parentId) {
+      const parent = this.transactions.get(tx.parentId)
+      if (parent) {
+        const idx = parent.children.lastIndexOf(tx.id)
+        if (idx !== -1) parent.children.splice(idx, 1)
+      }
+    }
+
     this.transactions.delete(tx.id)
 
     this.closedTransactions.push(tx)
@@ -248,6 +288,10 @@ export class TransactionManager {
       options.isolationLevel !== IsolationLevel.Serializable
     )
       throw new InvalidTransactionIsolationLevelError(options.isolationLevel)
+
+    if (options.parentId && !options.label) {
+      throw new TransactionManagerError('label is required for nested transactions')
+    }
 
     return {
       ...options,

@@ -11,6 +11,7 @@ import { IsolationLevel, Options } from './Transaction'
 import { TransactionManager } from './TransactionManager'
 import {
   InvalidTransactionIsolationLevelError,
+  NestedTransactionActiveError,
   TransactionClosedError,
   TransactionExecutionTimeoutError,
   TransactionManagerError,
@@ -209,7 +210,7 @@ test('with explicit isolation level', async () => {
 test('for MySQL with explicit isolation level requires isolation level set before BEGIN', async () => {
   const driverAdapter = new MockDriverAdapter({ provider: 'mysql' })
   const transactionManager = new TransactionManager({
-    driverAdapter: bindAdapter(driverAdapter)
+    driverAdapter: bindAdapter(driverAdapter),
   })
 
   const id = await startTransaction(transactionManager, { isolationLevel: IsolationLevel.Serializable })
@@ -223,7 +224,7 @@ test('for MySQL with explicit isolation level requires isolation level set befor
 test('for SQLite with unsupported isolation level', async () => {
   const driverAdapter = new MockDriverAdapter({ provider: 'sqlite' })
   const transactionManager = new TransactionManager({
-    driverAdapter: bindAdapter(driverAdapter)
+    driverAdapter: bindAdapter(driverAdapter),
   })
 
   await expect(
@@ -234,7 +235,7 @@ test('for SQLite with unsupported isolation level', async () => {
 test('with isolation level only supported in MS SQL Server, "snapshot"', async () => {
   const driverAdapter = new MockDriverAdapter()
   const transactionManager = new TransactionManager({
-    driverAdapter: bindAdapter(driverAdapter)
+    driverAdapter: bindAdapter(driverAdapter),
   })
 
   await expect(
@@ -245,7 +246,7 @@ test('with isolation level only supported in MS SQL Server, "snapshot"', async (
 test('transaction times out during starting', async () => {
   const driverAdapter = new MockDriverAdapter()
   const transactionManager = new TransactionManager({
-    driverAdapter: bindAdapter(driverAdapter)
+    driverAdapter: bindAdapter(driverAdapter),
   })
 
   await expect(startTransaction(transactionManager, { maxWait: START_TRANSACTION_TIME / 2 })).rejects.toBeInstanceOf(
@@ -256,7 +257,7 @@ test('transaction times out during starting', async () => {
 test('transaction times out during execution', async () => {
   const driverAdapter = new MockDriverAdapter()
   const transactionManager = new TransactionManager({
-    driverAdapter: bindAdapter(driverAdapter)
+    driverAdapter: bindAdapter(driverAdapter),
   })
 
   const id = await startTransaction(transactionManager)
@@ -270,7 +271,7 @@ test('transaction times out during execution', async () => {
 test('trying to commit or rollback invalid transaction id fails with TransactionNotFoundError', async () => {
   const driverAdapter = new MockDriverAdapter()
   const transactionManager = new TransactionManager({
-    driverAdapter: bindAdapter(driverAdapter)
+    driverAdapter: bindAdapter(driverAdapter),
   })
 
   await expect(transactionManager.commitTransaction('invalid-tx-id')).rejects.toBeInstanceOf(TransactionNotFoundError)
@@ -279,6 +280,22 @@ test('trying to commit or rollback invalid transaction id fails with Transaction
   expect(driverAdapter.executeRawMock).not.toHaveBeenCalled()
   expect(driverAdapter.commitMock).not.toHaveBeenCalled()
   expect(driverAdapter.rollbackMock).not.toHaveBeenCalled()
+})
+
+test('nested transactions must be closed in order', async () => {
+  const driverAdapter = new MockDriverAdapter()
+  const transactionManager = new TransactionManager({
+    driverAdapter: bindAdapter(driverAdapter),
+  })
+
+  const parentId = await startTransaction(transactionManager)
+  const childId = await startTransaction(transactionManager, { parentId, label: 'child' })
+
+  await expect(transactionManager.commitTransaction(parentId)).rejects.toBeInstanceOf(NestedTransactionActiveError)
+
+  await expect(transactionManager.commitTransaction(childId)).resolves.toBeUndefined()
+
+  await expect(transactionManager.commitTransaction(parentId)).resolves.toBeUndefined()
 })
 
 test('TransactionManagerErrors have common structure', () => {
